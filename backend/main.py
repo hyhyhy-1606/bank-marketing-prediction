@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import joblib
 import pandas as pd
@@ -7,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 MODEL_PATH = Path(__file__).parent / "model.joblib"
+METRICS_PATH = Path(__file__).parent / "metrics.json"
 app = FastAPI(title="Bank Marketing Prediction API", version="1.0.0")
 origins = [x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -38,7 +40,16 @@ def get_metrics():
     if not MODEL_PATH.exists():
         raise HTTPException(status_code=503, detail="Model is not trained.")
     bundle = joblib.load(MODEL_PATH)
-    return bundle.get("metrics", {})
+    metrics = dict(bundle.get("metrics", {}))
+    # evaluate.py sinh số liệu đánh giá chi tiết; nếu file khớp cấu hình thì hợp nhất.
+    if METRICS_PATH.exists():
+        try:
+            extended = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            extended = {}
+        if extended.get("config") == bundle.get("config", {}).get("name"):
+            metrics.update(extended)
+    return metrics
 @app.post("/predict")
 def predict(customer: Customer):
     if not MODEL_PATH.exists():

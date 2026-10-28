@@ -91,6 +91,16 @@ function normalizeMetrics(raw) {
     raw.test_samples ?? raw.n_test ?? cmTotal
   );
 
+  const optionalRate = value => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 && n <= 1 ? n : null;
+  };
+  const recommended =
+    raw.metrics_at_recommended_threshold &&
+    typeof raw.metrics_at_recommended_threshold === "object"
+      ? raw.metrics_at_recommended_threshold
+      : null;
+
   return {
     accuracy,
     precision,
@@ -104,7 +114,19 @@ function normalizeMetrics(raw) {
     tp: hasCM ? tp : null,
     threshold: Number.isFinite(Number(raw.threshold))
       ? Number(raw.threshold)
-      : 0.5
+      : 0.5,
+    pr_auc: optionalRate(raw.pr_auc),
+    brier: Number.isFinite(Number(raw.brier)) ? Number(raw.brier) : null,
+    config: typeof raw.config === "string" ? raw.config : null,
+    recommended_threshold: optionalRate(raw.recommended_threshold),
+    profit_at_recommended:
+      recommended && Number.isFinite(Number(recommended.profit))
+        ? Number(recommended.profit)
+        : null,
+    calls_at_recommended:
+      recommended && Number.isFinite(Number(recommended.calls))
+        ? Number(recommended.calls)
+        : null
   };
 }
 
@@ -138,6 +160,7 @@ function App() {
   const [predictError, setPredictError] = useState("");
   const [metricsError, setMetricsError] = useState("");
   const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsWarming, setMetricsWarming] = useState(0);
   const [modelMetrics, setModelMetrics] = useState(null);
 
   const apiBase = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
@@ -159,35 +182,54 @@ function App() {
 
       setMetricsLoading(true);
 
-      try {
-        const response = await fetch(`${apiBase}/metrics`);
+      const MAX_ATTEMPTS = 5;
+      let lastError = null;
 
-        if (!response.ok) {
-          throw new Error(`API trả về HTTP ${response.status}`);
+      for (let attempt = 0; attempt < MAX_ATTEMPTS && !cancelled; attempt += 1) {
+        if (attempt > 0) {
+          setMetricsWarming(attempt);
+          await new Promise(resolve => setTimeout(resolve, 4000));
+          if (cancelled) return;
         }
 
-        const raw = await response.json();
-        const normalized = normalizeMetrics(raw);
+        try {
+          const response = await fetch(`${apiBase}/metrics`);
 
-        if (!normalized) {
-          throw new Error(
-            "Dữ liệu metrics không đủ hoặc không đúng định dạng mong đợi."
-          );
-        }
+          if (!response.ok) {
+            throw new Error(`API trả về HTTP ${response.status}`);
+          }
 
-        if (!cancelled) {
+          const raw = await response.json();
+          const normalized = normalizeMetrics(raw);
+
+          if (!normalized) {
+            const formatError = new Error(
+              "Dữ liệu metrics không đủ hoặc không đúng định dạng mong đợi."
+            );
+            formatError.fatal = true;
+            throw formatError;
+          }
+
           setModelMetrics(normalized);
           setMetricsError("");
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (error.fatal) break;
         }
-      } catch (error) {
-        if (!cancelled) {
+      }
+
+      if (!cancelled) {
+        if (lastError) {
           setModelMetrics(null);
           setMetricsError(
-            `Không tải được metrics: ${error.message}`
+            `Không tải được metrics: ${lastError.message}. ` +
+              "Backend Render có thể đang khởi động (cold start) — hãy thử tải lại trang sau khoảng 30 giây."
           );
         }
-      } finally {
-        if (!cancelled) setMetricsLoading(false);
+        setMetricsLoading(false);
+        setMetricsWarming(0);
       }
     }
 
@@ -469,8 +511,13 @@ function App() {
 
       setPrediction(data);
     } catch (error) {
+      const networkBlocked =
+        error instanceof TypeError || /Failed to fetch|NetworkError/i.test(error.message);
+
       setPredictError(
-        `Không gọi được API dự đoán: ${error.message}. Kiểm tra URL backend, CORS và trạng thái model.`
+        networkBlocked
+          ? "Không gọi được API dự đoán: backend Render có thể đang khởi động (cold start). Đợi khoảng 30 giây rồi thử lại."
+          : `Không gọi được API dự đoán: ${error.message}. Kiểm tra URL backend, CORS và trạng thái model.`
       );
     }
   }
@@ -900,7 +947,11 @@ function App() {
                 extra="MODEL METRICS"
               >
                 {metricsLoading ? (
-                  <div className="empty-table">Đang tải metrics từ backend...</div>
+                  <div className="empty-table">
+                    {metricsWarming
+                      ? `Backend đang khởi động — đang thử lại (${metricsWarming}/4)...`
+                      : "Đang tải metrics từ backend..."}
+                  </div>
                 ) : metricsError ? (
                   <div className="error-box">
                     {metricsError}
@@ -938,6 +989,37 @@ function App() {
                         description="Tỷ lệ dự đoán đúng trên toàn bộ tập test."
                       />
                     </div>
+
+                    {(modelMetrics.pr_auc !== null ||
+                      modelMetrics.recommended_threshold !== null) && (
+                      <div className="eval-advanced-grid">
+                        {modelMetrics.pr_auc !== null && (
+                          <MetricCard
+                            label="PR-AUC"
+                            value={modelMetrics.pr_auc.toFixed(4)}
+                            description="Diện tích dưới đường Precision–Recall, phù hợp hơn Accuracy khi dữ liệu mất cân bằng."
+                          />
+                        )}
+                        {modelMetrics.recommended_threshold !== null && (
+                          <MetricCard
+                            label="NGƯỠNG TỐI ƯU"
+                            value={pct(modelMetrics.recommended_threshold)}
+                            description="Ngưỡng tối đa hoá lợi nhuận kỳ vọng theo chi phí cuộc gọi và giá trị hợp đồng."
+                          />
+                        )}
+                        {modelMetrics.profit_at_recommended !== null && (
+                          <MetricCard
+                            label="LỢI NHUẬN ƯỚC TÍNH"
+                            value={`${fmt(modelMetrics.profit_at_recommended)} ₫`}
+                            description={
+                              modelMetrics.calls_at_recommended !== null
+                                ? `Lợi nhuận trên tập test với ${fmt(modelMetrics.calls_at_recommended)} cuộc gọi tại ngưỡng tối ưu.`
+                                : "Lợi nhuận trên tập test tại ngưỡng tối ưu."
+                            }
+                          />
+                        )}
+                      </div>
+                    )}
 
                     <div className="eval-detail-grid">
                       {[
@@ -1004,8 +1086,10 @@ function App() {
                         <b>Diễn giải phương pháp</b>
                         <ul className="spec-list">
                           <li>
-                            <strong>Thuật toán:</strong> Random Forest theo cấu hình
-                            trong script huấn luyện.
+                            <strong>Thuật toán:</strong>{" "}
+                            {modelMetrics.config
+                              ? `Random Forest, cấu hình ${modelMetrics.config}.`
+                              : "Random Forest theo cấu hình trong script huấn luyện."}
                           </li>
                           <li>
                             <strong>Mất cân bằng lớp:</strong> class_weight="balanced"

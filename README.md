@@ -1,5 +1,7 @@
 # Bank Marketing Analytics — Vercel starter
 
+Live demo: https://bank-marketing-prediction-project.vercel.app/ · API docs: https://bank-marketing-prediction-1o9v.onrender.com/docs
+
 A responsive React + Vite dashboard based on the uploaded notebook's Bank Marketing workflow:
 - EDA and campaign summaries
 - CSV upload and data explorer
@@ -8,7 +10,7 @@ A responsive React + Vite dashboard based on the uploaded notebook's Bank Market
 - Responsive layout for desktop and mobile
 
 ## Important data note
-The initial view uses a tiny **illustrative demo dataset**, not the official 45,211-row dataset and not research findings. Upload `bank-full.csv` (separator is handled by standard CSV parsing only if exported as comma-delimited; the original UCI file is semicolon-delimited). For the original semicolon-delimited file, open it in Excel/Sheets and export as comma-delimited CSV first, or modify the Papa Parse delimiter setting to `;`.
+The initial view uses a tiny **illustrative demo dataset**, not the official 45,211-row dataset and not research findings. Upload `bank-full.csv` directly: PapaParse detects the semicolon separator of the original UCI file automatically.
 
 The website derives displayed KPIs from the currently loaded rows. Do not report demo values as experimental results.
 
@@ -41,6 +43,20 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 The training script downloads the official UCI Bank Marketing data, excludes `duration` to avoid post-call leakage, uses a stratified 80/20 split and prints test metrics. The API loads `backend/model.joblib`. Keep the backend's Python runtime compatible with `requirements.txt`. Configure `CORS_ORIGINS` to your deployed Vercel domain for production.
 
+## Evaluation
+```bash
+cd backend
+python evaluate.py
+```
+
+This script runs 5-fold stratified cross-validation for three candidate models, compares them on the held-out test set, adds baselines, bootstrap confidence intervals, a threshold/profit curve, decile lift and calibration, then writes:
+
+- `backend/reports/eval_tables.md` — every table used in the report, generated from code
+- `backend/reports/threshold_curve.csv`, `lift_table.csv`, `model_comparison.csv`
+- `backend/metrics.json` — extended metrics that `/metrics` merges over `model.joblib`
+
+The canonical model is `rf-150-leaf5` (Random Forest, 150 trees, `min_samples_leaf=5`, `class_weight="balanced"`, `random_state=42`), which reproduces the notebook's held-out results.
+
 ## Suggested report upgrades
 - Include architecture: UCI CSV → preprocessing/model pipeline → FastAPI inference API → Vercel React dashboard.
 - Record the actual test metrics from your run; do not copy example metrics from elsewhere.
@@ -49,6 +65,6 @@ The training script downloads the official UCI Bank Marketing data, excludes `du
 
 ## Current limitations
 - The web dashboard starts with illustrative demo rows and accepts a CSV with a `y` column.
-- Original UCI `bank-full.csv` uses semicolon delimiters. Convert to comma-separated CSV before upload, or update the parser to use `delimiter: ";"`.
 - The API form supplies `default="no"` because the current form does not ask for that field. If you want full feature control, add a default-status field.
-- This is a starter project, not yet deployed to your Vercel account.
+- `class_weight="balanced"` inflates predicted probabilities, so they should not be read as calibrated subscription rates.
+- The deployed predictor classifies at threshold 0.5. `evaluate.py` also reports a profit-optimal threshold for campaign list selection.
